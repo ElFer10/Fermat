@@ -2,6 +2,7 @@
 
 #include "mathnode.h"
 
+#include <QTimer>
 #include <QWidget>
 
 #include <memory>
@@ -25,6 +26,10 @@ class EquationWidget final : public QWidget
     void moveCursorLeft();
     void moveCursorRight();
     void moveToParent(bool placeAfterFraction);
+    void resetCursorBlink();
+
+    QTimer m_cursorTimer;
+    bool m_cursorVisible = true;
 
     std::unique_ptr<RowNode> m_rootNode;
 

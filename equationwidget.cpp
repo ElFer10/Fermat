@@ -51,6 +51,93 @@ bool findRowPosition(const RowNode *currentRow, const RowNode *targetRow, const 
     return false;
 }
 
+bool hitTestRow(RowNode *row, const QPointF &rowPosition, const QPointF &mousePosition, const QFontMetricsF &metrics,
+                RowNode *&selectedRow, QPointF &selectedRowPosition)
+{
+    const NodeLayout rowLayout = row->layout(metrics);
+
+    qreal currentX = rowPosition.x();
+
+    for (qsizetype index = 0; index < row->childCount(); ++index)
+    {
+        MathNode *child = row->childAt(index);
+
+        const NodeLayout childLayout = child->layout(metrics);
+
+        const QPointF childPosition(currentX, rowPosition.y() + rowLayout.baseline - childLayout.baseline);
+
+        auto *fraction = dynamic_cast<FractionNode *>(child);
+
+        if (fraction)
+        {
+            QRectF fractionRectangle(childPosition, childLayout.size);
+
+            /*
+             * Ampliamos un poco el área para que sea
+             * más fácil hacer clic en la fracción.
+             */
+            fractionRectangle.adjust(-4.0, -4.0, 4.0, 4.0);
+
+            if (fractionRectangle.contains(mousePosition))
+            {
+                const NodeLayout numeratorLayout = fraction->numeratorRow()->layout(metrics);
+
+                const qreal divisionLineY = childPosition.y() + numeratorLayout.size.height() + 4.0;
+
+                RowNode *targetRow = nullptr;
+                QPointF targetPosition;
+
+                if (mousePosition.y() < divisionLineY)
+                {
+                    targetRow = fraction->numeratorRow();
+
+                    targetPosition = fraction->numeratorPosition(childPosition, metrics);
+                }
+                else
+                {
+                    targetRow = fraction->denominatorRow();
+
+                    targetPosition = fraction->denominatorPosition(childPosition, metrics);
+                }
+
+                /*
+                 * Buscamos otra fracción dentro de
+                 * la fila seleccionada.
+                 */
+                return hitTestRow(targetRow, targetPosition, mousePosition, metrics, selectedRow, selectedRowPosition);
+            }
+        }
+
+        currentX += childLayout.size.width();
+    }
+
+    selectedRow = row;
+    selectedRowPosition = rowPosition;
+    return true;
+}
+
+qsizetype closestCursorPosition(const RowNode *row, const QPointF &rowPosition, qreal mouseX,
+                                const QFontMetricsF &metrics)
+{
+    qreal currentX = rowPosition.x();
+
+    for (qsizetype index = 0; index < row->childCount(); ++index)
+    {
+        const MathNode *child = row->childAt(index);
+
+        const qreal childWidth = child->layout(metrics).size.width();
+
+        const qreal childMiddle = currentX + childWidth / 2.0;
+
+        if (mouseX < childMiddle)
+            return index;
+
+        currentX += childWidth;
+    }
+
+    return row->childCount();
+}
+
 } // namespace
 
 EquationWidget::EquationWidget(QWidget *parent)
@@ -59,6 +146,22 @@ EquationWidget::EquationWidget(QWidget *parent)
     setFocusPolicy(Qt::StrongFocus);
     setMinimumHeight(240);
     setCursor(Qt::IBeamCursor);
+    m_cursorTimer.setInterval(500);
+
+    connect(&m_cursorTimer, &QTimer::timeout, this, [this]() {
+        m_cursorVisible = !m_cursorVisible;
+        update();
+    });
+}
+
+void EquationWidget::resetCursorBlink()
+{
+    m_cursorVisible = true;
+
+    if (hasFocus())
+        m_cursorTimer.start();
+
+    update();
 }
 
 void EquationWidget::insertFraction()
@@ -114,8 +217,7 @@ void EquationWidget::moveCursorLeft()
     {
         MathNode *previousNode = m_activeRow->childAt(m_cursorPosition - 1);
 
-        // Si encontramos una fracción, entramos por
-        // su extremo derecho: el denominador.
+        // Si encontramos una fracción, entramos por su extremo derecho: el denominador.
         if (auto *fraction = dynamic_cast<FractionNode *>(previousNode))
         {
             m_activeRow = fraction->denominatorRow();
@@ -151,8 +253,7 @@ void EquationWidget::moveCursorRight()
     {
         MathNode *nextNode = m_activeRow->childAt(m_cursorPosition);
 
-        // Si encontramos una fracción, entramos por
-        // su extremo izquierdo: el numerador.
+        // Si encontramos una fracción, entramos por su extremo izquierdo: el numerador.
         if (auto *fraction = dynamic_cast<FractionNode *>(nextNode))
         {
             m_activeRow = fraction->numeratorRow();
@@ -189,8 +290,6 @@ void EquationWidget::paintEvent(QPaintEvent *)
 
     painter.fillRect(rect(), palette().color(QPalette::Base));
 
-    painter.setPen(palette().color(QPalette::Text));
-
     QFont mathFont = font();
     mathFont.setPointSize(24);
     painter.setFont(mathFont);
@@ -200,25 +299,52 @@ void EquationWidget::paintEvent(QPaintEvent *)
 
     const QPointF rootPosition(24.0, (height() - rootLayout.size.height()) / 2.0);
 
-    m_rootNode->draw(painter, rootPosition, metrics);
-
-    if (!hasFocus())
-        return;
-
     QPointF activeRowPosition;
 
     const bool rowFound = findRowPosition(m_rootNode.get(), m_activeRow, rootPosition, metrics, activeRowPosition);
 
-    if (!rowFound)
+    /*
+     * Dibuja primero el fondo de la fila activa,
+     * para que quede detrás de la ecuación.
+     */
+    if (hasFocus() && rowFound)
+    {
+        const NodeLayout activeLayout = m_activeRow->layout(metrics);
+
+        QRectF activeRectangle(activeRowPosition, activeLayout.size);
+
+        activeRectangle.adjust(-4.0, -2.0, 4.0, 2.0);
+
+        QColor highlightColor = palette().color(QPalette::Highlight);
+
+        highlightColor.setAlpha(35);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(highlightColor);
+
+        painter.drawRoundedRect(activeRectangle, 4.0, 4.0);
+    }
+
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(palette().color(QPalette::Text));
+
+    m_rootNode->draw(painter, rootPosition, metrics);
+
+    if (!hasFocus() || !m_cursorVisible || !rowFound)
+    {
         return;
+    }
 
     const NodeLayout activeLayout = m_activeRow->layout(metrics);
 
     const qreal cursorX = activeRowPosition.x() + m_activeRow->cursorOffset(m_cursorPosition, metrics);
 
-    // El cursor conserva el tamaño normal del texto,
-    // aunque la fila contenga una fracción grande.
     const qreal cursorTop = activeRowPosition.y() + activeLayout.baseline - metrics.ascent();
+
+    QPen cursorPen(palette().color(QPalette::Text));
+
+    cursorPen.setWidthF(1.5);
+    painter.setPen(cursorPen);
 
     painter.drawLine(QPointF(cursorX, cursorTop), QPointF(cursorX, cursorTop + metrics.height()));
 }
@@ -329,23 +455,54 @@ void EquationWidget::keyPressEvent(QKeyEvent *event)
     }
     }
 
-    update();
+    resetCursorBlink();
 }
 
-void EquationWidget::mousePressEvent(QMouseEvent *)
+void EquationWidget::mousePressEvent(QMouseEvent *event)
 {
+    if (event->button() != Qt::LeftButton)
+    {
+        QWidget::mousePressEvent(event);
+        return;
+    }
+
     setFocus();
-    update();
+
+    QFont mathFont = font();
+    mathFont.setPointSize(24);
+
+    const QFontMetricsF metrics(mathFont);
+    const NodeLayout rootLayout = m_rootNode->layout(metrics);
+
+    const QPointF rootPosition(24.0, (height() - rootLayout.size.height()) / 2.0);
+
+    RowNode *selectedRow = nullptr;
+    QPointF selectedRowPosition;
+
+    hitTestRow(m_rootNode.get(), rootPosition, event->position(), metrics, selectedRow, selectedRowPosition);
+
+    if (selectedRow)
+    {
+        m_activeRow = selectedRow;
+
+        m_cursorPosition = closestCursorPosition(selectedRow, selectedRowPosition, event->position().x(), metrics);
+    }
+
+    resetCursorBlink();
 }
 
 void EquationWidget::focusInEvent(QFocusEvent *event)
 {
     QWidget::focusInEvent(event);
-    update();
+    resetCursorBlink();
 }
 
 void EquationWidget::focusOutEvent(QFocusEvent *event)
 {
     QWidget::focusOutEvent(event);
+
+    m_cursorTimer.stop();
+    m_cursorVisible = false;
+
     update();
 }
