@@ -13,8 +13,13 @@ class EquationWidget final : public QWidget
     explicit EquationWidget(QWidget *parent = nullptr);
 
     void insertRoot();
+    void insertSuperscript();
+    void insertSubscript();
     void insertFraction();
     void clearEquation();
+    void insertIntegral();
+    void insertSummation();
+
     QString toLatex() const;
 
   protected:
@@ -30,6 +35,7 @@ class EquationWidget final : public QWidget
     void moveCursorRight();
     void moveToParent(bool placeAfterFraction);
     void resetCursorBlink();
+    void insertLargeOperator(LargeOperatorType type);
 
     // Parpadeo del cursor
     QTimer m_cursorTimer;

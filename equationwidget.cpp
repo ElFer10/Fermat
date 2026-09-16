@@ -1,56 +1,123 @@
 #include "equationwidget.h"
 
 #include <QFocusEvent>
+#include <QFont>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
-
-// ---------------------------------------------------------------------------
-// Funciones auxiliares (namespace anónimo)
-// ---------------------------------------------------------------------------
+#include <QRectF>
 
 namespace
 {
 
 bool findRowPosition(const RowNode *currentRow, const RowNode *targetRow, const QPointF &currentPosition,
-                     const QFontMetricsF &metrics, QPointF &result)
+                     const QFont &currentFont, const QFontMetricsF &metrics, QPointF &result, QFont &resultFont)
 {
     if (currentRow == targetRow)
     {
         result = currentPosition;
+        resultFont = currentFont;
         return true;
     }
 
     const NodeLayout rowLayout = currentRow->layout(metrics);
+
     qreal currentX = currentPosition.x();
 
     for (qsizetype index = 0; index < currentRow->childCount(); ++index)
     {
         const MathNode *child = currentRow->childAt(index);
+
+        if (!child)
+            continue;
+
         const NodeLayout childLayout = child->layout(metrics);
+
         const QPointF childPosition(currentX, currentPosition.y() + rowLayout.baseline - childLayout.baseline);
 
         if (const auto *fraction = dynamic_cast<const FractionNode *>(child))
         {
-            const QPointF numeratorPosition = fraction->numeratorPosition(childPosition, metrics);
-
-            if (findRowPosition(fraction->numeratorRow(), targetRow, numeratorPosition, metrics, result))
+            if (findRowPosition(fraction->numeratorRow(), targetRow,
+                                fraction->numeratorPosition(childPosition, metrics), currentFont, metrics, result,
+                                resultFont))
+            {
                 return true;
+            }
 
-            const QPointF denominatorPosition = fraction->denominatorPosition(childPosition, metrics);
-
-            if (findRowPosition(fraction->denominatorRow(), targetRow, denominatorPosition, metrics, result))
+            if (findRowPosition(fraction->denominatorRow(), targetRow,
+                                fraction->denominatorPosition(childPosition, metrics), currentFont, metrics, result,
+                                resultFont))
+            {
                 return true;
+            }
         }
 
-        const auto *root = dynamic_cast<const RootNode *>(child);
-
-        if (root)
+        if (const auto *root = dynamic_cast<const RootNode *>(child))
         {
-            const QPointF radicandPosition = root->radicandPosition(childPosition, metrics);
+            if (findRowPosition(root->radicandRow(), targetRow, root->radicandPosition(childPosition, metrics),
+                                currentFont, metrics, result, resultFont))
+            {
+                return true;
+            }
+        }
 
-            if (findRowPosition(root->radicandRow(), targetRow, radicandPosition, metrics, result))
+        if (const auto *script = dynamic_cast<const ScriptNode *>(child))
+        {
+            if (findRowPosition(script->baseRow(), targetRow, script->basePosition(childPosition, metrics), currentFont,
+                                metrics, result, resultFont))
+            {
+                return true;
+            }
+
+            const QFont smallerFont = script->superscriptFont(metrics);
+
+            const QFontMetricsF smallerMetrics(smallerFont);
+
+            if (script->hasSuperscript())
+            {
+                if (findRowPosition(script->superscriptRow(), targetRow,
+                                    script->superscriptPosition(childPosition, metrics), smallerFont, smallerMetrics,
+                                    result, resultFont))
+                {
+                    return true;
+                }
+            }
+
+            if (script->hasSubscript())
+            {
+                if (findRowPosition(script->subscriptRow(), targetRow,
+                                    script->subscriptPosition(childPosition, metrics), smallerFont, smallerMetrics,
+                                    result, resultFont))
+                {
+                    return true;
+                }
+            }
+        }
+
+        if (const auto *largeOperator = dynamic_cast<const LargeOperatorNode *>(child))
+        {
+            const QFont smallFont = largeOperator->limitFont(metrics);
+
+            const QFontMetricsF smallMetrics(smallFont);
+
+            if (findRowPosition(largeOperator->lowerLimitRow(), targetRow,
+                                largeOperator->lowerLimitPosition(childPosition, metrics), smallFont, smallMetrics,
+                                result, resultFont))
+            {
+                return true;
+            }
+
+            if (findRowPosition(largeOperator->upperLimitRow(), targetRow,
+                                largeOperator->upperLimitPosition(childPosition, metrics), smallFont, smallMetrics,
+                                result, resultFont))
+            {
+                return true;
+            }
+
+            if (findRowPosition(largeOperator->bodyRow(), targetRow,
+                                largeOperator->bodyPosition(childPosition, metrics), currentFont, metrics, result,
+                                resultFont))
             {
                 return true;
             }
@@ -62,52 +129,49 @@ bool findRowPosition(const RowNode *currentRow, const RowNode *targetRow, const 
     return false;
 }
 
-bool hitTestRow(RowNode *row, const QPointF &rowPosition, const QPointF &mousePosition, const QFontMetricsF &metrics,
-                RowNode *&selectedRow, QPointF &selectedRowPosition)
+bool hitTestRow(RowNode *row, const QPointF &rowPosition, const QPointF &mousePosition, const QFont &currentFont,
+                const QFontMetricsF &metrics, RowNode *&selectedRow, QPointF &selectedRowPosition, QFont &selectedFont)
 {
     const NodeLayout rowLayout = row->layout(metrics);
+
     qreal currentX = rowPosition.x();
 
     for (qsizetype index = 0; index < row->childCount(); ++index)
     {
         MathNode *child = row->childAt(index);
+
+        if (!child)
+            continue;
+
         const NodeLayout childLayout = child->layout(metrics);
+
         const QPointF childPosition(currentX, rowPosition.y() + rowLayout.baseline - childLayout.baseline);
 
         if (auto *fraction = dynamic_cast<FractionNode *>(child))
         {
             QRectF fractionRectangle(childPosition, childLayout.size);
 
-            // Ampliamos un poco el área para que sea más fácil hacer clic en la fracción.
             fractionRectangle.adjust(-4.0, -4.0, 4.0, 4.0);
 
             if (fractionRectangle.contains(mousePosition))
             {
                 const NodeLayout numeratorLayout = fraction->numeratorRow()->layout(metrics);
-                const qreal divisionLineY = childPosition.y() + numeratorLayout.size.height() + 4.0;
 
-                RowNode *targetRow = nullptr;
-                QPointF targetPosition;
+                const qreal divisionLineY = childPosition.y() + numeratorLayout.size.height() + 4.0;
 
                 if (mousePosition.y() < divisionLineY)
                 {
-                    targetRow = fraction->numeratorRow();
-                    targetPosition = fraction->numeratorPosition(childPosition, metrics);
-                }
-                else
-                {
-                    targetRow = fraction->denominatorRow();
-                    targetPosition = fraction->denominatorPosition(childPosition, metrics);
+                    return hitTestRow(fraction->numeratorRow(), fraction->numeratorPosition(childPosition, metrics),
+                                      mousePosition, currentFont, metrics, selectedRow, selectedRowPosition,
+                                      selectedFont);
                 }
 
-                // Buscamos otra fracción dentro de la fila seleccionada.
-                return hitTestRow(targetRow, targetPosition, mousePosition, metrics, selectedRow, selectedRowPosition);
+                return hitTestRow(fraction->denominatorRow(), fraction->denominatorPosition(childPosition, metrics),
+                                  mousePosition, currentFont, metrics, selectedRow, selectedRowPosition, selectedFont);
             }
         }
 
-        auto *root = dynamic_cast<RootNode *>(child);
-
-        if (root)
+        if (auto *root = dynamic_cast<RootNode *>(child))
         {
             QRectF rootRectangle(childPosition, childLayout.size);
 
@@ -115,10 +179,106 @@ bool hitTestRow(RowNode *row, const QPointF &rowPosition, const QPointF &mousePo
 
             if (rootRectangle.contains(mousePosition))
             {
-                const QPointF radicandPosition = root->radicandPosition(childPosition, metrics);
+                return hitTestRow(root->radicandRow(), root->radicandPosition(childPosition, metrics), mousePosition,
+                                  currentFont, metrics, selectedRow, selectedRowPosition, selectedFont);
+            }
+        }
 
-                return hitTestRow(root->radicandRow(), radicandPosition, mousePosition, metrics, selectedRow,
-                                  selectedRowPosition);
+        if (auto *script = dynamic_cast<ScriptNode *>(child))
+        {
+            QRectF scriptRectangle(childPosition, childLayout.size);
+
+            scriptRectangle.adjust(-4.0, -4.0, 4.0, 4.0);
+
+            if (scriptRectangle.contains(mousePosition))
+            {
+                const QPointF basePosition = script->basePosition(childPosition, metrics);
+
+                const QFont smallerFont = script->superscriptFont(metrics);
+
+                const QFontMetricsF smallerMetrics(smallerFont);
+
+                if (script->hasSubscript())
+                {
+                    const QPointF lowerPosition = script->subscriptPosition(childPosition, metrics);
+
+                    const NodeLayout lowerLayout = script->subscriptRow()->layout(smallerMetrics);
+
+                    QRectF lowerRectangle(lowerPosition, lowerLayout.size);
+
+                    lowerRectangle.adjust(-3.0, -3.0, 3.0, 3.0);
+
+                    if (lowerRectangle.contains(mousePosition))
+                    {
+                        return hitTestRow(script->subscriptRow(), lowerPosition, mousePosition, smallerFont,
+                                          smallerMetrics, selectedRow, selectedRowPosition, selectedFont);
+                    }
+                }
+
+                if (script->hasSuperscript())
+                {
+                    const QPointF upperPosition = script->superscriptPosition(childPosition, metrics);
+
+                    const NodeLayout upperLayout = script->superscriptRow()->layout(smallerMetrics);
+
+                    QRectF upperRectangle(upperPosition, upperLayout.size);
+
+                    upperRectangle.adjust(-3.0, -3.0, 3.0, 3.0);
+
+                    if (upperRectangle.contains(mousePosition))
+                    {
+                        return hitTestRow(script->superscriptRow(), upperPosition, mousePosition, smallerFont,
+                                          smallerMetrics, selectedRow, selectedRowPosition, selectedFont);
+                    }
+                }
+
+                return hitTestRow(script->baseRow(), basePosition, mousePosition, currentFont, metrics, selectedRow,
+                                  selectedRowPosition, selectedFont);
+            }
+        }
+
+        if (auto *largeOperator = dynamic_cast<LargeOperatorNode *>(child))
+        {
+            QRectF operatorRectangle(childPosition, childLayout.size);
+
+            operatorRectangle.adjust(-4.0, -4.0, 4.0, 4.0);
+
+            if (operatorRectangle.contains(mousePosition))
+            {
+                const QFont smallFont = largeOperator->limitFont(metrics);
+
+                const QFontMetricsF smallMetrics(smallFont);
+
+                const QPointF lowerPosition = largeOperator->lowerLimitPosition(childPosition, metrics);
+
+                const NodeLayout lowerLayout = largeOperator->lowerLimitRow()->layout(smallMetrics);
+
+                QRectF lowerRectangle(lowerPosition, lowerLayout.size);
+
+                lowerRectangle.adjust(-3.0, -3.0, 3.0, 3.0);
+
+                if (lowerRectangle.contains(mousePosition))
+                {
+                    return hitTestRow(largeOperator->lowerLimitRow(), lowerPosition, mousePosition, smallFont,
+                                      smallMetrics, selectedRow, selectedRowPosition, selectedFont);
+                }
+
+                const QPointF upperPosition = largeOperator->upperLimitPosition(childPosition, metrics);
+
+                const NodeLayout upperLayout = largeOperator->upperLimitRow()->layout(smallMetrics);
+
+                QRectF upperRectangle(upperPosition, upperLayout.size);
+
+                upperRectangle.adjust(-3.0, -3.0, 3.0, 3.0);
+
+                if (upperRectangle.contains(mousePosition))
+                {
+                    return hitTestRow(largeOperator->upperLimitRow(), upperPosition, mousePosition, smallFont,
+                                      smallMetrics, selectedRow, selectedRowPosition, selectedFont);
+                }
+
+                return hitTestRow(largeOperator->bodyRow(), largeOperator->bodyPosition(childPosition, metrics),
+                                  mousePosition, currentFont, metrics, selectedRow, selectedRowPosition, selectedFont);
             }
         }
 
@@ -127,6 +287,8 @@ bool hitTestRow(RowNode *row, const QPointF &rowPosition, const QPointF &mousePo
 
     selectedRow = row;
     selectedRowPosition = rowPosition;
+    selectedFont = currentFont;
+
     return true;
 }
 
@@ -138,7 +300,12 @@ qsizetype closestCursorPosition(const RowNode *row, const QPointF &rowPosition, 
     for (qsizetype index = 0; index < row->childCount(); ++index)
     {
         const MathNode *child = row->childAt(index);
+
+        if (!child)
+            continue;
+
         const qreal childWidth = child->layout(metrics).size.width();
+
         const qreal childMiddle = currentX + childWidth / 2.0;
 
         if (mouseX < childMiddle)
@@ -152,16 +319,17 @@ qsizetype closestCursorPosition(const RowNode *row, const QPointF &rowPosition, 
 
 } // namespace
 
-// ---------------------------------------------------------------------------
-// Construcción
-// ---------------------------------------------------------------------------
+// ============================================================
+// Constructor
+// ============================================================
 
 EquationWidget::EquationWidget(QWidget *parent)
     : QWidget(parent), m_rootNode(std::make_unique<RowNode>()), m_activeRow(m_rootNode.get())
 {
     setFocusPolicy(Qt::StrongFocus);
-    setMinimumHeight(240);
+    setMinimumHeight(300);
     setCursor(Qt::IBeamCursor);
+
     m_cursorTimer.setInterval(500);
 
     connect(&m_cursorTimer, &QTimer::timeout, this, [this]() {
@@ -170,351 +338,202 @@ EquationWidget::EquationWidget(QWidget *parent)
     });
 }
 
-// ---------------------------------------------------------------------------
-// Acciones públicas
-// ---------------------------------------------------------------------------
+// ============================================================
+// Exportación
+// ============================================================
+
+QString EquationWidget::toLatex() const
+{
+    return m_rootNode->toLatex();
+}
+
+// ============================================================
+// Inserción de estructuras
+// ============================================================
+
+void EquationWidget::insertFraction()
+{
+    auto fraction = std::make_unique<FractionNode>();
+
+    FractionNode *fractionPointer = fraction.get();
+
+    m_activeRow->insertNode(m_cursorPosition, std::move(fraction));
+
+    m_activeRow = fractionPointer->numeratorRow();
+
+    m_cursorPosition = 0;
+
+    setFocus();
+    resetCursorBlink();
+}
 
 void EquationWidget::insertRoot()
 {
     auto root = std::make_unique<RootNode>();
+
     RootNode *rootPointer = root.get();
 
     m_activeRow->insertNode(m_cursorPosition, std::move(root));
 
     m_activeRow = rootPointer->radicandRow();
+
     m_cursorPosition = 0;
 
     setFocus();
     resetCursorBlink();
 }
 
-void EquationWidget::insertFraction()
-{
-    auto fraction = std::make_unique<FractionNode>();
-    FractionNode *fractionPointer = fraction.get();
-
-    m_activeRow->insertNode(m_cursorPosition, std::move(fraction));
-
-    // Al insertar, entramos directamente al numerador.
-    m_activeRow = fractionPointer->numeratorRow();
-    m_cursorPosition = 0;
-
-    setFocus();
-    update();
-}
-
-void EquationWidget::clearEquation()
-{
-    m_rootNode = std::make_unique<RowNode>();
-    m_activeRow = m_rootNode.get();
-    m_cursorPosition = 0;
-
-    setFocus();
-    update();
-}
-
-// ---------------------------------------------------------------------------
-// Eventos de Qt
-// ---------------------------------------------------------------------------
-
-void EquationWidget::paintEvent(QPaintEvent *)
-{
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing);
-    painter.fillRect(rect(), palette().color(QPalette::Base));
-
-    QFont mathFont = font();
-    mathFont.setPointSize(24);
-    painter.setFont(mathFont);
-
-    const QFontMetricsF metrics(mathFont);
-    const NodeLayout rootLayout = m_rootNode->layout(metrics);
-    const QPointF rootPosition(24.0, (height() - rootLayout.size.height()) / 2.0);
-
-    QPointF activeRowPosition;
-    const bool rowFound = findRowPosition(m_rootNode.get(), m_activeRow, rootPosition, metrics, activeRowPosition);
-
-    // Dibuja primero el fondo de la fila activa, para que quede detrás de la ecuación.
-    if (hasFocus() && rowFound)
-    {
-        const NodeLayout activeLayout = m_activeRow->layout(metrics);
-
-        QRectF activeRectangle(activeRowPosition, activeLayout.size);
-        activeRectangle.adjust(-4.0, -2.0, 4.0, 2.0);
-
-        QColor highlightColor = palette().color(QPalette::Highlight);
-        highlightColor.setAlpha(35);
-
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(highlightColor);
-        painter.drawRoundedRect(activeRectangle, 4.0, 4.0);
-    }
-
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(palette().color(QPalette::Text));
-    m_rootNode->draw(painter, rootPosition, metrics);
-
-    if (!hasFocus() || !m_cursorVisible || !rowFound)
-        return;
-
-    const NodeLayout activeLayout = m_activeRow->layout(metrics);
-    const qreal cursorX = activeRowPosition.x() + m_activeRow->cursorOffset(m_cursorPosition, metrics);
-    const qreal cursorTop = activeRowPosition.y() + activeLayout.baseline - metrics.ascent();
-
-    QPen cursorPen(palette().color(QPalette::Text));
-    cursorPen.setWidthF(1.5);
-    painter.setPen(cursorPen);
-    painter.drawLine(QPointF(cursorX, cursorTop), QPointF(cursorX, cursorTop + metrics.height()));
-}
-
-void EquationWidget::keyPressEvent(QKeyEvent *event)
-{
-    switch (event->key())
-    {
-    case Qt::Key_Left:
-        moveCursorLeft();
-        break;
-
-    case Qt::Key_Right:
-        moveCursorRight();
-        break;
-
-    case Qt::Key_Up: {
-        FractionNode *owner = m_activeRow->ownerFraction();
-
-        if (owner && m_activeRow->role() == RowRole::Denominator)
-        {
-            m_activeRow = owner->numeratorRow();
-            m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
-        }
-        break;
-    }
-
-    case Qt::Key_Down: {
-        FractionNode *owner = m_activeRow->ownerFraction();
-
-        if (owner && m_activeRow->role() == RowRole::Numerator)
-        {
-            m_activeRow = owner->denominatorRow();
-            m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
-        }
-        break;
-    }
-
-    case Qt::Key_Home:
-        m_cursorPosition = 0;
-        break;
-
-    case Qt::Key_End:
-        m_cursorPosition = m_activeRow->childCount();
-        break;
-
-    case Qt::Key_Backspace:
-        if (m_cursorPosition > 0)
-        {
-            m_activeRow->removeNode(m_cursorPosition - 1);
-            --m_cursorPosition;
-        }
-        else
-        {
-            moveCursorLeft();
-        }
-        break;
-
-    case Qt::Key_Delete:
-        if (m_cursorPosition < m_activeRow->childCount())
-            m_activeRow->removeNode(m_cursorPosition);
-        break;
-
-    case Qt::Key_Tab: {
-        FractionNode *owner = m_activeRow->ownerFraction();
-
-        if (!owner)
-            break;
-
-        if (owner)
-        {
-            if (m_activeRow->role() == RowRole::Numerator)
-            {
-                m_activeRow = owner->denominatorRow();
-
-                m_cursorPosition = 0;
-            }
-            else
-            {
-                moveToParent(true);
-            }
-        }
-        else if (m_activeRow->ownerRoot())
-        {
-            moveToParent(true);
-        }
-
-        break;
-    }
-
-    case Qt::Key_Slash:
-        insertFraction();
-        return;
-
-    default: {
-        const QString input = event->text();
-
-        if (!input.isEmpty() && input.front().isPrint())
-        {
-            m_activeRow->insertNode(m_cursorPosition, std::make_unique<TextNode>(input));
-            ++m_cursorPosition;
-        }
-        else
-        {
-            QWidget::keyPressEvent(event);
-            return;
-        }
-
-        break;
-    }
-    }
-
-    resetCursorBlink();
-}
-
-void EquationWidget::mousePressEvent(QMouseEvent *event)
-{
-    if (event->button() != Qt::LeftButton)
-    {
-        QWidget::mousePressEvent(event);
-        return;
-    }
-
-    setFocus();
-
-    QFont mathFont = font();
-    mathFont.setPointSize(24);
-
-    const QFontMetricsF metrics(mathFont);
-    const NodeLayout rootLayout = m_rootNode->layout(metrics);
-    const QPointF rootPosition(24.0, (height() - rootLayout.size.height()) / 2.0);
-
-    RowNode *selectedRow = nullptr;
-    QPointF selectedRowPosition;
-
-    hitTestRow(m_rootNode.get(), rootPosition, event->position(), metrics, selectedRow, selectedRowPosition);
-
-    if (selectedRow)
-    {
-        m_activeRow = selectedRow;
-        m_cursorPosition = closestCursorPosition(selectedRow, selectedRowPosition, event->position().x(), metrics);
-    }
-
-    resetCursorBlink();
-}
-
-void EquationWidget::focusInEvent(QFocusEvent *event)
-{
-    QWidget::focusInEvent(event);
-    resetCursorBlink();
-}
-
-void EquationWidget::focusOutEvent(QFocusEvent *event)
-{
-    QWidget::focusOutEvent(event);
-
-    m_cursorTimer.stop();
-    m_cursorVisible = false;
-    update();
-}
-
-// ---------------------------------------------------------------------------
-// Navegación del cursor
-// ---------------------------------------------------------------------------
-
-void EquationWidget::moveCursorLeft()
+void EquationWidget::insertSuperscript()
 {
     if (m_cursorPosition > 0)
     {
         MathNode *previousNode = m_activeRow->childAt(m_cursorPosition - 1);
 
-        // Si encontramos una fracción, entramos por su extremo derecho: el denominador.
-        if (auto *fraction = dynamic_cast<FractionNode *>(previousNode))
+        if (auto *existingScript = dynamic_cast<ScriptNode *>(previousNode))
         {
-            m_activeRow = fraction->denominatorRow();
-            m_cursorPosition = m_activeRow->childCount();
-            return;
-        }
+            existingScript->enableSuperscript();
 
-        if (auto *root = dynamic_cast<RootNode *>(previousNode))
-        {
-            m_activeRow = root->radicandRow();
+            m_activeRow = existingScript->superscriptRow();
+
             m_cursorPosition = m_activeRow->childCount();
 
+            setFocus();
+            resetCursorBlink();
             return;
         }
-
-        --m_cursorPosition;
-        return;
     }
 
-    FractionNode *owner = m_activeRow->ownerFraction();
+    auto script = std::make_unique<ScriptNode>(true, false);
 
-    if (!owner)
-        return;
+    ScriptNode *scriptPointer = script.get();
 
-    if (m_activeRow->role() == RowRole::Denominator)
+    if (m_cursorPosition > 0)
     {
-        m_activeRow = owner->numeratorRow();
-        m_cursorPosition = m_activeRow->childCount();
-    }
-    else
-    {
-        moveToParent(false);
-    }
-    if (m_activeRow->ownerRoot())
-        moveToParent(false);
-}
+        const qsizetype insertionPosition = m_cursorPosition - 1;
 
-void EquationWidget::moveCursorRight()
-{
-    if (m_cursorPosition < m_activeRow->childCount())
-    {
-        MathNode *nextNode = m_activeRow->childAt(m_cursorPosition);
+        std::unique_ptr<MathNode> baseNode = m_activeRow->takeNode(insertionPosition);
 
-        // Si encontramos una fracción, entramos por su extremo izquierdo: el numerador.
-        if (auto *fraction = dynamic_cast<FractionNode *>(nextNode))
-        {
-            m_activeRow = fraction->numeratorRow();
-            m_cursorPosition = 0;
-            return;
-        }
+        scriptPointer->baseRow()->appendNode(std::move(baseNode));
 
-        if (auto *root = dynamic_cast<RootNode *>(nextNode))
-        {
-            m_activeRow = root->radicandRow();
-            m_cursorPosition = 0;
+        m_activeRow->insertNode(insertionPosition, std::move(script));
 
-            return;
-        }
+        m_activeRow = scriptPointer->superscriptRow();
 
-        ++m_cursorPosition;
-        return;
-    }
-
-    FractionNode *owner = m_activeRow->ownerFraction();
-
-    if (!owner)
-        return;
-
-    if (m_activeRow->role() == RowRole::Numerator)
-    {
-        m_activeRow = owner->denominatorRow();
         m_cursorPosition = 0;
     }
     else
     {
-        moveToParent(true);
+        m_activeRow->insertNode(m_cursorPosition, std::move(script));
+
+        m_activeRow = scriptPointer->baseRow();
+
+        m_cursorPosition = 0;
     }
 
-    if (m_activeRow->ownerRoot())
-        moveToParent(true);
+    setFocus();
+    resetCursorBlink();
+}
+
+void EquationWidget::insertSubscript()
+{
+    if (m_cursorPosition > 0)
+    {
+        MathNode *previousNode = m_activeRow->childAt(m_cursorPosition - 1);
+
+        if (auto *existingScript = dynamic_cast<ScriptNode *>(previousNode))
+        {
+            existingScript->enableSubscript();
+
+            m_activeRow = existingScript->subscriptRow();
+
+            m_cursorPosition = m_activeRow->childCount();
+
+            setFocus();
+            resetCursorBlink();
+            return;
+        }
+    }
+
+    auto script = std::make_unique<ScriptNode>(false, true);
+
+    ScriptNode *scriptPointer = script.get();
+
+    if (m_cursorPosition > 0)
+    {
+        const qsizetype insertionPosition = m_cursorPosition - 1;
+
+        std::unique_ptr<MathNode> baseNode = m_activeRow->takeNode(insertionPosition);
+
+        scriptPointer->baseRow()->appendNode(std::move(baseNode));
+
+        m_activeRow->insertNode(insertionPosition, std::move(script));
+
+        m_activeRow = scriptPointer->subscriptRow();
+
+        m_cursorPosition = 0;
+    }
+    else
+    {
+        m_activeRow->insertNode(m_cursorPosition, std::move(script));
+
+        m_activeRow = scriptPointer->baseRow();
+
+        m_cursorPosition = 0;
+    }
+
+    setFocus();
+    resetCursorBlink();
+}
+
+void EquationWidget::insertLargeOperator(LargeOperatorType type)
+{
+    auto largeOperator = std::make_unique<LargeOperatorNode>(type);
+
+    LargeOperatorNode *operatorPointer = largeOperator.get();
+
+    m_activeRow->insertNode(m_cursorPosition, std::move(largeOperator));
+
+    m_activeRow = operatorPointer->lowerLimitRow();
+
+    m_cursorPosition = 0;
+
+    setFocus();
+    resetCursorBlink();
+}
+
+void EquationWidget::insertIntegral()
+{
+    insertLargeOperator(LargeOperatorType::Integral);
+}
+
+void EquationWidget::insertSummation()
+{
+    insertLargeOperator(LargeOperatorType::Summation);
+}
+
+void EquationWidget::clearEquation()
+{
+    m_rootNode = std::make_unique<RowNode>();
+
+    m_activeRow = m_rootNode.get();
+    m_cursorPosition = 0;
+
+    setFocus();
+    resetCursorBlink();
+}
+
+// ============================================================
+// Cursor
+// ============================================================
+
+void EquationWidget::resetCursorBlink()
+{
+    m_cursorVisible = true;
+
+    if (hasFocus())
+        m_cursorTimer.start();
+
+    update();
 }
 
 void EquationWidget::moveToParent(bool placeAfterStructure)
@@ -532,6 +551,16 @@ void EquationWidget::moveToParent(bool placeAfterStructure)
         parent = root->parentRow();
         structure = root;
     }
+    else if (ScriptNode *script = m_activeRow->ownerScript())
+    {
+        parent = script->parentRow();
+        structure = script;
+    }
+    else if (LargeOperatorNode *largeOperator = m_activeRow->ownerOperator())
+    {
+        parent = largeOperator->parentRow();
+        structure = largeOperator;
+    }
 
     if (!parent || !structure)
         return;
@@ -546,17 +575,643 @@ void EquationWidget::moveToParent(bool placeAfterStructure)
     m_cursorPosition = placeAfterStructure ? structureIndex + 1 : structureIndex;
 }
 
-void EquationWidget::resetCursorBlink()
+void EquationWidget::moveCursorLeft()
 {
-    m_cursorVisible = true;
+    if (m_cursorPosition > 0)
+    {
+        MathNode *previousNode = m_activeRow->childAt(m_cursorPosition - 1);
 
-    if (hasFocus())
-        m_cursorTimer.start();
+        if (auto *fraction = dynamic_cast<FractionNode *>(previousNode))
+        {
+            m_activeRow = fraction->denominatorRow();
 
-    update();
+            m_cursorPosition = m_activeRow->childCount();
+
+            return;
+        }
+
+        if (auto *root = dynamic_cast<RootNode *>(previousNode))
+        {
+            m_activeRow = root->radicandRow();
+
+            m_cursorPosition = m_activeRow->childCount();
+
+            return;
+        }
+
+        if (auto *script = dynamic_cast<ScriptNode *>(previousNode))
+        {
+            if (script->hasSuperscript())
+            {
+                m_activeRow = script->superscriptRow();
+            }
+            else if (script->hasSubscript())
+            {
+                m_activeRow = script->subscriptRow();
+            }
+            else
+            {
+                m_activeRow = script->baseRow();
+            }
+
+            m_cursorPosition = m_activeRow->childCount();
+
+            return;
+        }
+
+        if (auto *largeOperator = dynamic_cast<LargeOperatorNode *>(previousNode))
+        {
+            m_activeRow = largeOperator->bodyRow();
+
+            m_cursorPosition = m_activeRow->childCount();
+
+            return;
+        }
+
+        --m_cursorPosition;
+        return;
+    }
+
+    if (FractionNode *fraction = m_activeRow->ownerFraction())
+    {
+        if (m_activeRow->role() == RowRole::Denominator)
+        {
+            m_activeRow = fraction->numeratorRow();
+
+            m_cursorPosition = m_activeRow->childCount();
+        }
+        else
+        {
+            moveToParent(false);
+        }
+
+        return;
+    }
+
+    if (m_activeRow->ownerRoot())
+    {
+        moveToParent(false);
+        return;
+    }
+
+    if (ScriptNode *script = m_activeRow->ownerScript())
+    {
+        if (m_activeRow->role() == RowRole::Superscript)
+        {
+            if (script->hasSubscript())
+            {
+                m_activeRow = script->subscriptRow();
+            }
+            else
+            {
+                m_activeRow = script->baseRow();
+            }
+
+            m_cursorPosition = m_activeRow->childCount();
+        }
+        else if (m_activeRow->role() == RowRole::Subscript)
+        {
+            m_activeRow = script->baseRow();
+
+            m_cursorPosition = m_activeRow->childCount();
+        }
+        else
+        {
+            moveToParent(false);
+        }
+
+        return;
+    }
+
+    if (LargeOperatorNode *largeOperator = m_activeRow->ownerOperator())
+    {
+        if (m_activeRow->role() == RowRole::OperatorBody)
+        {
+            m_activeRow = largeOperator->upperLimitRow();
+
+            m_cursorPosition = m_activeRow->childCount();
+        }
+        else if (m_activeRow->role() == RowRole::UpperLimit)
+        {
+            m_activeRow = largeOperator->lowerLimitRow();
+
+            m_cursorPosition = m_activeRow->childCount();
+        }
+        else
+        {
+            moveToParent(false);
+        }
+    }
 }
 
-QString EquationWidget::toLatex() const
+void EquationWidget::moveCursorRight()
 {
-    return m_rootNode->toLatex();
+    if (m_cursorPosition < m_activeRow->childCount())
+    {
+        MathNode *nextNode = m_activeRow->childAt(m_cursorPosition);
+
+        if (auto *fraction = dynamic_cast<FractionNode *>(nextNode))
+        {
+            m_activeRow = fraction->numeratorRow();
+
+            m_cursorPosition = 0;
+            return;
+        }
+
+        if (auto *root = dynamic_cast<RootNode *>(nextNode))
+        {
+            m_activeRow = root->radicandRow();
+
+            m_cursorPosition = 0;
+            return;
+        }
+
+        if (auto *script = dynamic_cast<ScriptNode *>(nextNode))
+        {
+            m_activeRow = script->baseRow();
+
+            m_cursorPosition = 0;
+            return;
+        }
+
+        if (auto *largeOperator = dynamic_cast<LargeOperatorNode *>(nextNode))
+        {
+            m_activeRow = largeOperator->lowerLimitRow();
+
+            m_cursorPosition = 0;
+            return;
+        }
+
+        ++m_cursorPosition;
+        return;
+    }
+
+    if (FractionNode *fraction = m_activeRow->ownerFraction())
+    {
+        if (m_activeRow->role() == RowRole::Numerator)
+        {
+            m_activeRow = fraction->denominatorRow();
+
+            m_cursorPosition = 0;
+        }
+        else
+        {
+            moveToParent(true);
+        }
+
+        return;
+    }
+
+    if (m_activeRow->ownerRoot())
+    {
+        moveToParent(true);
+        return;
+    }
+
+    if (ScriptNode *script = m_activeRow->ownerScript())
+    {
+        if (m_activeRow->role() == RowRole::ScriptBase)
+        {
+            if (script->hasSubscript())
+            {
+                m_activeRow = script->subscriptRow();
+
+                m_cursorPosition = 0;
+            }
+            else if (script->hasSuperscript())
+            {
+                m_activeRow = script->superscriptRow();
+
+                m_cursorPosition = 0;
+            }
+            else
+            {
+                moveToParent(true);
+            }
+        }
+        else if (m_activeRow->role() == RowRole::Subscript)
+        {
+            if (script->hasSuperscript())
+            {
+                m_activeRow = script->superscriptRow();
+
+                m_cursorPosition = 0;
+            }
+            else
+            {
+                moveToParent(true);
+            }
+        }
+        else
+        {
+            moveToParent(true);
+        }
+
+        return;
+    }
+
+    if (LargeOperatorNode *largeOperator = m_activeRow->ownerOperator())
+    {
+        if (m_activeRow->role() == RowRole::LowerLimit)
+        {
+            m_activeRow = largeOperator->upperLimitRow();
+
+            m_cursorPosition = 0;
+        }
+        else if (m_activeRow->role() == RowRole::UpperLimit)
+        {
+            m_activeRow = largeOperator->bodyRow();
+
+            m_cursorPosition = 0;
+        }
+        else
+        {
+            moveToParent(true);
+        }
+    }
+}
+
+// ============================================================
+// Dibujo
+// ============================================================
+
+void EquationWidget::paintEvent(QPaintEvent *)
+{
+    QPainter painter(this);
+
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    painter.fillRect(rect(), palette().color(QPalette::Base));
+
+    QFont mathFont = font();
+    mathFont.setPointSize(24);
+
+    painter.setFont(mathFont);
+
+    const QFontMetricsF metrics(mathFont);
+
+    const NodeLayout rootLayout = m_rootNode->layout(metrics);
+
+    const QPointF rootPosition(24.0, (height() - rootLayout.size.height()) / 2.0);
+
+    QPointF activeRowPosition;
+    QFont activeFont = mathFont;
+
+    const bool rowFound =
+        findRowPosition(m_rootNode.get(), m_activeRow, rootPosition, mathFont, metrics, activeRowPosition, activeFont);
+
+    const QFontMetricsF activeMetrics(activeFont);
+
+    if (hasFocus() && rowFound)
+    {
+        const NodeLayout activeLayout = m_activeRow->layout(activeMetrics);
+
+        QRectF activeRectangle(activeRowPosition, activeLayout.size);
+
+        activeRectangle.adjust(-4.0, -2.0, 4.0, 2.0);
+
+        QColor highlightColor = palette().color(QPalette::Highlight);
+
+        highlightColor.setAlpha(35);
+
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(highlightColor);
+
+        painter.drawRoundedRect(activeRectangle, 4.0, 4.0);
+    }
+
+    painter.setBrush(Qt::NoBrush);
+    painter.setPen(palette().color(QPalette::Text));
+
+    painter.setFont(mathFont);
+
+    m_rootNode->draw(painter, rootPosition, metrics);
+
+    if (!hasFocus() || !m_cursorVisible || !rowFound)
+    {
+        return;
+    }
+
+    const NodeLayout activeLayout = m_activeRow->layout(activeMetrics);
+
+    const qreal cursorX = activeRowPosition.x() + m_activeRow->cursorOffset(m_cursorPosition, activeMetrics);
+
+    const qreal cursorTop = activeRowPosition.y() + activeLayout.baseline - activeMetrics.ascent();
+
+    QPen cursorPen(palette().color(QPalette::Text));
+
+    cursorPen.setWidthF(1.5);
+    painter.setPen(cursorPen);
+
+    painter.drawLine(QPointF(cursorX, cursorTop), QPointF(cursorX, cursorTop + activeMetrics.height()));
+}
+
+// ============================================================
+// Teclado
+// ============================================================
+
+void EquationWidget::keyPressEvent(QKeyEvent *event)
+{
+    if (event->text() == QStringLiteral("^"))
+    {
+        insertSuperscript();
+        return;
+    }
+
+    if (event->text() == QStringLiteral("_"))
+    {
+        insertSubscript();
+        return;
+    }
+
+    switch (event->key())
+    {
+    case Qt::Key_Left:
+        moveCursorLeft();
+        break;
+
+    case Qt::Key_Right:
+        moveCursorRight();
+        break;
+
+    case Qt::Key_Up: {
+        if (FractionNode *fraction = m_activeRow->ownerFraction())
+        {
+            if (m_activeRow->role() == RowRole::Denominator)
+            {
+                m_activeRow = fraction->numeratorRow();
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+        }
+        else if (ScriptNode *script = m_activeRow->ownerScript())
+        {
+            if (m_activeRow->role() == RowRole::Subscript)
+            {
+                if (script->hasSuperscript())
+                {
+                    m_activeRow = script->superscriptRow();
+                }
+                else
+                {
+                    m_activeRow = script->baseRow();
+                }
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+            else if (m_activeRow->role() == RowRole::ScriptBase && script->hasSuperscript())
+            {
+                m_activeRow = script->superscriptRow();
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+        }
+        else if (LargeOperatorNode *largeOperator = m_activeRow->ownerOperator())
+        {
+            if (m_activeRow->role() == RowRole::LowerLimit)
+            {
+                m_activeRow = largeOperator->upperLimitRow();
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+        }
+
+        break;
+    }
+
+    case Qt::Key_Down: {
+        if (FractionNode *fraction = m_activeRow->ownerFraction())
+        {
+            if (m_activeRow->role() == RowRole::Numerator)
+            {
+                m_activeRow = fraction->denominatorRow();
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+        }
+        else if (ScriptNode *script = m_activeRow->ownerScript())
+        {
+            if (m_activeRow->role() == RowRole::Superscript)
+            {
+                if (script->hasSubscript())
+                {
+                    m_activeRow = script->subscriptRow();
+                }
+                else
+                {
+                    m_activeRow = script->baseRow();
+                }
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+            else if (m_activeRow->role() == RowRole::ScriptBase && script->hasSubscript())
+            {
+                m_activeRow = script->subscriptRow();
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+        }
+        else if (LargeOperatorNode *largeOperator = m_activeRow->ownerOperator())
+        {
+            if (m_activeRow->role() == RowRole::UpperLimit)
+            {
+                m_activeRow = largeOperator->lowerLimitRow();
+
+                m_cursorPosition = qMin(m_cursorPosition, m_activeRow->childCount());
+            }
+        }
+
+        break;
+    }
+
+    case Qt::Key_Home:
+        m_cursorPosition = 0;
+        break;
+
+    case Qt::Key_End:
+        m_cursorPosition = m_activeRow->childCount();
+        break;
+
+    case Qt::Key_Backspace:
+        if (m_cursorPosition > 0)
+        {
+            m_activeRow->removeNode(m_cursorPosition - 1);
+
+            --m_cursorPosition;
+        }
+        else
+        {
+            moveCursorLeft();
+        }
+
+        break;
+
+    case Qt::Key_Delete:
+        if (m_cursorPosition < m_activeRow->childCount())
+        {
+            m_activeRow->removeNode(m_cursorPosition);
+        }
+
+        break;
+
+    case Qt::Key_Tab: {
+        if (FractionNode *fraction = m_activeRow->ownerFraction())
+        {
+            if (m_activeRow->role() == RowRole::Numerator)
+            {
+                m_activeRow = fraction->denominatorRow();
+
+                m_cursorPosition = 0;
+            }
+            else
+            {
+                moveToParent(true);
+            }
+        }
+        else if (m_activeRow->ownerRoot())
+        {
+            moveToParent(true);
+        }
+        else if (ScriptNode *script = m_activeRow->ownerScript())
+        {
+            if (m_activeRow->role() == RowRole::ScriptBase)
+            {
+                if (script->hasSubscript())
+                {
+                    m_activeRow = script->subscriptRow();
+
+                    m_cursorPosition = 0;
+                }
+                else if (script->hasSuperscript())
+                {
+                    m_activeRow = script->superscriptRow();
+
+                    m_cursorPosition = 0;
+                }
+                else
+                {
+                    moveToParent(true);
+                }
+            }
+            else if (m_activeRow->role() == RowRole::Subscript && script->hasSuperscript())
+            {
+                m_activeRow = script->superscriptRow();
+
+                m_cursorPosition = 0;
+            }
+            else
+            {
+                moveToParent(true);
+            }
+        }
+        else if (LargeOperatorNode *largeOperator = m_activeRow->ownerOperator())
+        {
+            if (m_activeRow->role() == RowRole::LowerLimit)
+            {
+                m_activeRow = largeOperator->upperLimitRow();
+
+                m_cursorPosition = 0;
+            }
+            else if (m_activeRow->role() == RowRole::UpperLimit)
+            {
+                m_activeRow = largeOperator->bodyRow();
+
+                m_cursorPosition = 0;
+            }
+            else
+            {
+                moveToParent(true);
+            }
+        }
+
+        break;
+    }
+
+    case Qt::Key_Slash:
+        insertFraction();
+        return;
+
+    default: {
+        const QString input = event->text();
+
+        if (!input.isEmpty() && input.front().isPrint())
+        {
+            m_activeRow->insertNode(m_cursorPosition, std::make_unique<TextNode>(input));
+
+            ++m_cursorPosition;
+        }
+        else
+        {
+            QWidget::keyPressEvent(event);
+            return;
+        }
+
+        break;
+    }
+    }
+
+    resetCursorBlink();
+}
+
+// ============================================================
+// Ratón
+// ============================================================
+
+void EquationWidget::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton)
+    {
+        QWidget::mousePressEvent(event);
+        return;
+    }
+
+    setFocus();
+
+    QFont mathFont = font();
+    mathFont.setPointSize(24);
+
+    const QFontMetricsF metrics(mathFont);
+
+    const NodeLayout rootLayout = m_rootNode->layout(metrics);
+
+    const QPointF rootPosition(24.0, (height() - rootLayout.size.height()) / 2.0);
+
+    RowNode *selectedRow = nullptr;
+    QPointF selectedRowPosition;
+    QFont selectedFont = mathFont;
+
+    hitTestRow(m_rootNode.get(), rootPosition, event->position(), mathFont, metrics, selectedRow, selectedRowPosition,
+               selectedFont);
+
+    if (selectedRow)
+    {
+        const QFontMetricsF selectedMetrics(selectedFont);
+
+        m_activeRow = selectedRow;
+
+        m_cursorPosition =
+            closestCursorPosition(selectedRow, selectedRowPosition, event->position().x(), selectedMetrics);
+    }
+
+    resetCursorBlink();
+}
+
+// ============================================================
+// Foco
+// ============================================================
+
+void EquationWidget::focusInEvent(QFocusEvent *event)
+{
+    QWidget::focusInEvent(event);
+    resetCursorBlink();
+}
+
+void EquationWidget::focusOutEvent(QFocusEvent *event)
+{
+    QWidget::focusOutEvent(event);
+
+    m_cursorTimer.stop();
+    m_cursorVisible = false;
+
+    update();
 }
