@@ -1,12 +1,17 @@
 #include "equationwidget.h"
-
 #include <QFocusEvent>
 #include <QFont>
 #include <QKeyEvent>
+#include <QMarginsF>
 #include <QMouseEvent>
+#include <QPageLayout>
+#include <QPageSize>
 #include <QPainter>
 #include <QPalette>
+#include <QPdfWriter>
 #include <QRectF>
+#include <QSvgGenerator>
+#include <QtMath>
 
 namespace
 {
@@ -1282,4 +1287,137 @@ int EquationWidget::mathFontSize() const
 bool EquationWidget::variablesItalic() const
 {
     return m_mathStyle.italicVariables;
+}
+
+bool EquationWidget::exportPdf(const QString &fileName, QString *errorMessage) const
+{
+    if (fileName.isEmpty())
+    {
+        if (errorMessage)
+        {
+            *errorMessage = tr("No se indicó un archivo PDF.");
+        }
+
+        return false;
+    }
+
+    const QFont exportFont = m_mathStyle.baseFont;
+
+    const QFontMetricsF metrics(exportFont);
+
+    const NodeLayout equationLayout = m_rootNode->layout(metrics);
+
+    constexpr qreal padding = 18.0;
+
+    const QSizeF pixelSize(equationLayout.size.width() + padding * 2.0, equationLayout.size.height() + padding * 2.0);
+
+    const int dpi = qMax(72, logicalDpiX());
+
+    /*
+     * QPageSize espera puntos físicos.
+     * El dibujo usa píxeles lógicos, por eso
+     * convertimos según la resolución elegida.
+     */
+    const QSizeF pageSizePoints(pixelSize.width() * 72.0 / dpi, pixelSize.height() * 72.0 / dpi);
+
+    QPdfWriter writer(fileName);
+
+    writer.setResolution(dpi);
+    writer.setTitle(tr("Ecuación"));
+    writer.setCreator(tr("Clon de MathType"));
+
+    writer.setPageSize(QPageSize(pageSizePoints, QPageSize::Point, QStringLiteral("Equation"), QPageSize::ExactMatch));
+
+    writer.setPageMargins(QMarginsF(0, 0, 0, 0), QPageLayout::Point);
+
+    QPainter painter;
+
+    if (!painter.begin(&writer))
+    {
+        if (errorMessage)
+        {
+            *errorMessage = tr("No se pudo crear el archivo PDF.");
+        }
+
+        return false;
+    }
+
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    painter.fillRect(QRectF(QPointF(0, 0), pixelSize), Qt::white);
+
+    painter.setFont(exportFont);
+    painter.setPen(Qt::black);
+    painter.setBrush(Qt::NoBrush);
+
+    m_rootNode->draw(painter, QPointF(padding, padding), metrics);
+
+    painter.end();
+    return true;
+}
+
+bool EquationWidget::exportSvg(const QString &fileName, QString *errorMessage) const
+{
+    if (fileName.isEmpty())
+    {
+        if (errorMessage)
+        {
+            *errorMessage = tr("No se indicó un archivo SVG.");
+        }
+
+        return false;
+    }
+
+    const QFont exportFont = m_mathStyle.baseFont;
+
+    const QFontMetricsF metrics(exportFont);
+
+    const NodeLayout equationLayout = m_rootNode->layout(metrics);
+
+    constexpr qreal padding = 18.0;
+
+    const QSizeF documentSize(equationLayout.size.width() + padding * 2.0,
+                              equationLayout.size.height() + padding * 2.0);
+
+    const QSize integerSize(qCeil(documentSize.width()), qCeil(documentSize.height()));
+
+    QSvgGenerator generator;
+
+    generator.setFileName(fileName);
+    generator.setSize(integerSize);
+
+    generator.setViewBox(QRectF(QPointF(0, 0), documentSize));
+
+    generator.setResolution(qMax(72, logicalDpiX()));
+    generator.setTitle(tr("Ecuación"));
+
+    generator.setDescription(tr("Ecuación vectorial creada con "
+                                "Clon de MathType"));
+
+    QPainter painter;
+
+    if (!painter.begin(&generator))
+    {
+        if (errorMessage)
+        {
+            *errorMessage = tr("No se pudo crear el archivo SVG.");
+        }
+
+        return false;
+    }
+
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    /*
+     * No dibujamos un fondo para conservar
+     * la transparencia del SVG.
+     */
+    painter.setFont(exportFont);
+    painter.setPen(Qt::black);
+    painter.setBrush(Qt::NoBrush);
+
+    m_rootNode->draw(painter, QPointF(padding, padding), metrics);
+
+    painter.end();
+    return true;
 }

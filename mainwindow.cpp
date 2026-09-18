@@ -2,12 +2,14 @@
 #include "./ui_mainwindow.h"
 
 #include "equationwidget.h"
-
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QFontComboBox>
 #include <QLabel>
+#include <QMessageBox>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QToolBar>
@@ -146,7 +148,62 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     auto *clearAction = toolBar->addAction(tr("Limpiar"));
 
     connect(clearAction, &QAction::triggered, equationWidget, &EquationWidget::clearEquation);
+    auto *exportPdfAction = toolBar->addAction(tr("Exportar PDF"));
 
+    exportPdfAction->setToolTip(tr("Exporta la ecuación como PDF vectorial"));
+
+    connect(exportPdfAction, &QAction::triggered, this, [this, equationWidget]() {
+        QString fileName = QFileDialog::getSaveFileName(this, tr("Exportar ecuación como PDF"),
+                                                        QStringLiteral("ecuacion.pdf"), tr("Documento PDF (*.pdf)"));
+
+        if (fileName.isEmpty())
+            return;
+
+        if (!fileName.endsWith(QStringLiteral(".pdf"), Qt::CaseInsensitive))
+        {
+            fileName += QStringLiteral(".pdf");
+        }
+
+        QString errorMessage;
+
+        if (!equationWidget->exportPdf(fileName, &errorMessage))
+        {
+            QMessageBox::critical(this, tr("Error al exportar"), errorMessage);
+
+            return;
+        }
+
+        statusBar()->showMessage(tr("PDF exportado: %1").arg(QFileInfo(fileName).fileName()), 3000);
+    });
+
+    auto *exportSvgAction = toolBar->addAction(tr("Exportar SVG"));
+
+    exportSvgAction->setToolTip(tr("Exporta la ecuación como SVG vectorial"));
+
+    connect(exportSvgAction, &QAction::triggered, this, [this, equationWidget]() {
+        QString fileName =
+            QFileDialog::getSaveFileName(this, tr("Exportar ecuación como SVG"), QStringLiteral("ecuacion.svg"),
+                                         tr("Gráfico vectorial SVG (*.svg)"));
+
+        if (fileName.isEmpty())
+            return;
+
+        if (!fileName.endsWith(QStringLiteral(".svg"), Qt::CaseInsensitive))
+        {
+            fileName += QStringLiteral(".svg");
+        }
+
+        QString errorMessage;
+
+        if (!equationWidget->exportSvg(fileName, &errorMessage))
+        {
+            QMessageBox::critical(this, tr("Error al exportar"), errorMessage);
+
+            return;
+        }
+
+        statusBar()->showMessage(tr("SVG exportado: %1").arg(QFileInfo(fileName).fileName()), 3000);
+    });
     setWindowTitle(tr("Fermat"));
 
     resize(1100, 500);

@@ -32,6 +32,8 @@ class EquationWidget final : public QWidget
     QFont mathFont() const;
     int mathFontSize() const;
     bool variablesItalic() const;
+    bool exportPdf(const QString &fileName, QString *errorMessage = nullptr) const;
+    bool exportSvg(const QString &fileName, QString *errorMessage = nullptr) const;
 
   protected:
     void paintEvent(QPaintEvent *event) override;
