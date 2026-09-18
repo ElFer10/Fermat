@@ -330,14 +330,22 @@ EquationWidget::EquationWidget(QWidget *parent)
     setMinimumHeight(300);
     setCursor(Qt::IBeamCursor);
 
+    m_mathStyle.baseFont = font();
+    m_mathStyle.baseFont.setPointSize(24);
+    m_mathStyle.baseFont.setItalic(false);
+
+    m_mathStyle.italicVariables = true;
+
+    m_rootNode->setMathStyle(m_mathStyle);
+
     m_cursorTimer.setInterval(500);
 
     connect(&m_cursorTimer, &QTimer::timeout, this, [this]() {
         m_cursorVisible = !m_cursorVisible;
+
         update();
     });
 }
-
 // ============================================================
 // Exportación
 // ============================================================
@@ -517,6 +525,8 @@ void EquationWidget::clearEquation()
 
     m_activeRow = m_rootNode.get();
     m_cursorPosition = 0;
+
+    m_rootNode->setMathStyle(m_mathStyle);
 
     setFocus();
     resetCursorBlink();
@@ -843,8 +853,7 @@ void EquationWidget::paintEvent(QPaintEvent *)
 
     painter.fillRect(rect(), palette().color(QPalette::Base));
 
-    QFont mathFont = font();
-    mathFont.setPointSize(24);
+    const QFont mathFont = m_mathStyle.baseFont;
 
     painter.setFont(mathFont);
 
@@ -1167,8 +1176,7 @@ void EquationWidget::mousePressEvent(QMouseEvent *event)
 
     setFocus();
 
-    QFont mathFont = font();
-    mathFont.setPointSize(24);
+    const QFont mathFont = m_mathStyle.baseFont;
 
     const QFontMetricsF metrics(mathFont);
 
@@ -1214,4 +1222,64 @@ void EquationWidget::focusOutEvent(QFocusEvent *event)
     m_cursorVisible = false;
 
     update();
+}
+
+void EquationWidget::applyMathStyle()
+{
+    m_rootNode->setMathStyle(m_mathStyle);
+
+    update();
+}
+
+void EquationWidget::setMathFont(const QFont &font)
+{
+    const qreal currentPointSize = m_mathStyle.baseFont.pointSizeF();
+
+    const int currentPixelSize = m_mathStyle.baseFont.pixelSize();
+
+    QFont newFont = font;
+    newFont.setItalic(false);
+
+    if (currentPointSize > 0.0)
+    {
+        newFont.setPointSizeF(currentPointSize);
+    }
+    else if (currentPixelSize > 0)
+    {
+        newFont.setPixelSize(currentPixelSize);
+    }
+
+    m_mathStyle.baseFont = newFont;
+
+    applyMathStyle();
+}
+
+void EquationWidget::setMathFontSize(int pointSize)
+{
+    pointSize = qBound(8, pointSize, 96);
+
+    m_mathStyle.baseFont.setPointSize(pointSize);
+
+    applyMathStyle();
+}
+
+void EquationWidget::setVariablesItalic(bool enabled)
+{
+    m_mathStyle.italicVariables = enabled;
+    applyMathStyle();
+}
+
+QFont EquationWidget::mathFont() const
+{
+    return m_mathStyle.baseFont;
+}
+
+int EquationWidget::mathFontSize() const
+{
+    return m_mathStyle.baseFont.pointSize();
+}
+
+bool EquationWidget::variablesItalic() const
+{
+    return m_mathStyle.italicVariables;
 }

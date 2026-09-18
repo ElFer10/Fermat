@@ -17,6 +17,17 @@ TextNode::TextNode(QString text) : m_text(std::move(text))
 
 NodeLayout TextNode::layout(const QFontMetricsF &metrics) const
 {
+    if (m_hasMathStyle)
+    {
+        const QFont textFont = m_style.textFont(m_text);
+
+        const QFontMetricsF textMetrics(textFont);
+
+        const qreal width = m_text.isEmpty() ? 24.0 : textMetrics.horizontalAdvance(m_text);
+
+        return {QSizeF(width, textMetrics.height()), textMetrics.ascent()};
+    }
+
     const qreal width = m_text.isEmpty() ? 24.0 : metrics.horizontalAdvance(m_text);
 
     return {QSizeF(width, metrics.height()), metrics.ascent()};
@@ -24,6 +35,21 @@ NodeLayout TextNode::layout(const QFontMetricsF &metrics) const
 
 void TextNode::draw(QPainter &painter, const QPointF &topLeft, const QFontMetricsF &metrics) const
 {
+    if (m_hasMathStyle)
+    {
+        const QFont textFont = m_style.textFont(m_text);
+
+        const QFontMetricsF textMetrics(textFont);
+
+        painter.save();
+        painter.setFont(textFont);
+
+        painter.drawText(QPointF(topLeft.x(), topLeft.y() + textMetrics.ascent()), m_text);
+
+        painter.restore();
+        return;
+    }
+
     painter.drawText(QPointF(topLeft.x(), topLeft.y() + metrics.ascent()), m_text);
 }
 
@@ -96,6 +122,10 @@ RowNode::RowNode(ScriptNode *ownerScript, RowRole role) : m_role(role), m_ownerS
 {
 }
 
+RowNode::RowNode(LargeOperatorNode *ownerOperator, RowRole role) : m_role(role), m_ownerOperator(ownerOperator)
+{
+}
+
 FractionNode *RowNode::ownerFraction() const
 {
     return m_ownerFraction;
@@ -109,6 +139,11 @@ RootNode *RowNode::ownerRoot() const
 ScriptNode *RowNode::ownerScript() const
 {
     return m_ownerScript;
+}
+
+LargeOperatorNode *RowNode::ownerOperator() const
+{
+    return m_ownerOperator;
 }
 
 RowRole RowNode::role() const
@@ -167,10 +202,14 @@ void RowNode::appendNode(std::unique_ptr<MathNode> node)
     {
         script->setParentRow(this);
     }
+
     if (auto *largeOperator = dynamic_cast<LargeOperatorNode *>(node.get()))
     {
         largeOperator->setParentRow(this);
     }
+
+    if (m_hasMathStyle)
+        node->setMathStyle(m_style);
 
     m_children.push_back(std::move(node));
 }
@@ -196,6 +235,14 @@ void RowNode::insertNode(qsizetype index, std::unique_ptr<MathNode> node)
     {
         script->setParentRow(this);
     }
+
+    if (auto *largeOperator = dynamic_cast<LargeOperatorNode *>(node.get()))
+    {
+        largeOperator->setParentRow(this);
+    }
+
+    if (m_hasMathStyle)
+        node->setMathStyle(m_style);
 
     const auto iterator = m_children.begin() + static_cast<std::ptrdiff_t>(index);
 
@@ -227,9 +274,11 @@ void RowNode::removeNode(qsizetype index)
 
 NodeLayout RowNode::layout(const QFontMetricsF &metrics) const
 {
+    const QFontMetricsF effectiveMetrics = m_hasMathStyle ? m_style.metrics() : metrics;
+
     if (m_children.empty())
     {
-        return {QSizeF(24.0, metrics.height()), metrics.ascent()};
+        return {QSizeF(24.0, effectiveMetrics.height()), effectiveMetrics.ascent()};
     }
 
     qreal totalWidth = 0.0;
@@ -238,7 +287,7 @@ NodeLayout RowNode::layout(const QFontMetricsF &metrics) const
 
     for (const auto &child : m_children)
     {
-        const NodeLayout childLayout = child->layout(metrics);
+        const NodeLayout childLayout = child->layout(effectiveMetrics);
 
         totalWidth += childLayout.size.width();
 
@@ -252,17 +301,19 @@ NodeLayout RowNode::layout(const QFontMetricsF &metrics) const
 
 void RowNode::draw(QPainter &painter, const QPointF &topLeft, const QFontMetricsF &metrics) const
 {
-    const NodeLayout rowLayout = layout(metrics);
+    const QFontMetricsF effectiveMetrics = m_hasMathStyle ? m_style.metrics() : metrics;
+
+    const NodeLayout rowLayout = layout(effectiveMetrics);
 
     qreal currentX = topLeft.x();
 
     for (const auto &child : m_children)
     {
-        const NodeLayout childLayout = child->layout(metrics);
+        const NodeLayout childLayout = child->layout(effectiveMetrics);
 
         const QPointF childPosition(currentX, topLeft.y() + rowLayout.baseline - childLayout.baseline);
 
-        child->draw(painter, childPosition, metrics);
+        child->draw(painter, childPosition, effectiveMetrics);
 
         currentX += childLayout.size.width();
     }
@@ -270,6 +321,8 @@ void RowNode::draw(QPainter &painter, const QPointF &topLeft, const QFontMetrics
 
 qreal RowNode::cursorOffset(qsizetype cursorPosition, const QFontMetricsF &metrics) const
 {
+    const QFontMetricsF effectiveMetrics = m_hasMathStyle ? m_style.metrics() : metrics;
+
     cursorPosition = std::clamp<qsizetype>(cursorPosition, 0, childCount());
 
     qreal offset = 0.0;
@@ -280,7 +333,7 @@ qreal RowNode::cursorOffset(qsizetype cursorPosition, const QFontMetricsF &metri
 
         if (child)
         {
-            offset += child->layout(metrics).size.width();
+            offset += child->layout(effectiveMetrics).size.width();
         }
     }
 
@@ -449,9 +502,7 @@ void RootNode::draw(QPainter &painter, const QPointF &topLeft, const QFontMetric
 {
     const NodeLayout rootLayout = layout(metrics);
 
-    const QPointF contentPosition = radicandPosition(topLeft, metrics);
-
-    m_radicand->draw(painter, contentPosition, metrics);
+    m_radicand->draw(painter, radicandPosition(topLeft, metrics), metrics);
 
     const qreal x = topLeft.x();
     const qreal y = topLeft.y();
@@ -539,11 +590,21 @@ bool ScriptNode::hasSubscript() const
 void ScriptNode::enableSuperscript()
 {
     m_hasSuperscript = true;
+
+    if (m_hasMathStyle)
+    {
+        m_superscript->setMathStyle(m_style.scaled(0.70));
+    }
 }
 
 void ScriptNode::enableSubscript()
 {
     m_hasSubscript = true;
+
+    if (m_hasMathStyle)
+    {
+        m_subscript->setMathStyle(m_style.scaled(0.70));
+    }
 }
 
 RowNode *ScriptNode::parentRow() const
@@ -558,6 +619,9 @@ void ScriptNode::setParentRow(RowNode *parentRow)
 
 QFont ScriptNode::superscriptFont(const QFontMetricsF &baseMetrics) const
 {
+    if (m_hasMathStyle)
+        return m_style.scriptFont();
+
     QFont font = QApplication::font();
     const QFontMetricsF applicationMetrics(font);
 
@@ -584,21 +648,21 @@ NodeLayout ScriptNode::layout(const QFontMetricsF &metrics) const
 {
     const NodeLayout baseLayout = m_base->layout(metrics);
 
-    const QFont scriptFont = superscriptFont(metrics);
+    const QFont smallerFont = superscriptFont(metrics);
 
-    const QFontMetricsF scriptMetrics(scriptFont);
+    const QFontMetricsF smallerMetrics(smallerFont);
 
     NodeLayout superscriptLayout;
     NodeLayout subscriptLayout;
 
     if (m_hasSuperscript)
     {
-        superscriptLayout = m_superscript->layout(scriptMetrics);
+        superscriptLayout = m_superscript->layout(smallerMetrics);
     }
 
     if (m_hasSubscript)
     {
-        subscriptLayout = m_subscript->layout(scriptMetrics);
+        subscriptLayout = m_subscript->layout(smallerMetrics);
     }
 
     const qreal baseTop = m_hasSuperscript ? superscriptLayout.size.height() * 0.45 : 0.0;
@@ -631,9 +695,9 @@ QPointF ScriptNode::basePosition(const QPointF &topLeft, const QFontMetricsF &me
 
     if (m_hasSuperscript)
     {
-        const QFontMetricsF scriptMetrics(superscriptFont(metrics));
+        const QFontMetricsF smallerMetrics(superscriptFont(metrics));
 
-        const NodeLayout superscriptLayout = m_superscript->layout(scriptMetrics);
+        const NodeLayout superscriptLayout = m_superscript->layout(smallerMetrics);
 
         baseTop = superscriptLayout.size.height() * 0.45;
     }
@@ -700,15 +764,6 @@ QString ScriptNode::toLatex() const
     return result;
 }
 
-RowNode::RowNode(LargeOperatorNode *ownerOperator, RowRole role) : m_role(role), m_ownerOperator(ownerOperator)
-{
-}
-
-LargeOperatorNode *RowNode::ownerOperator() const
-{
-    return m_ownerOperator;
-}
-
 // ============================================================
 // LargeOperatorNode
 // ============================================================
@@ -768,14 +823,20 @@ void LargeOperatorNode::setParentRow(RowNode *parentRow)
 QString LargeOperatorNode::symbolText() const
 {
     if (m_type == LargeOperatorType::Integral)
+    {
         return QStringLiteral("∫");
+    }
 
     return QStringLiteral("∑");
 }
 
 QFont LargeOperatorNode::scaledFont(const QFontMetricsF &baseMetrics, qreal factor) const
 {
+    if (m_hasMathStyle)
+        return m_style.scaledFont(factor);
+
     QFont font = QApplication::font();
+
     const QFontMetricsF applicationMetrics(font);
 
     if (applicationMetrics.height() <= 0.0)
@@ -811,7 +872,7 @@ NodeLayout LargeOperatorNode::layout(const QFontMetricsF &metrics) const
 {
     const QFontMetricsF limitMetrics(limitFont(metrics));
 
-    const QFontMetricsF largeSymbolMetrics(symbolFont(metrics));
+    const QFontMetricsF symbolMetrics(symbolFont(metrics));
 
     const NodeLayout upperLayout = m_upperLimit->layout(limitMetrics);
 
@@ -819,16 +880,16 @@ NodeLayout LargeOperatorNode::layout(const QFontMetricsF &metrics) const
 
     const NodeLayout bodyLayout = m_body->layout(metrics);
 
-    const qreal symbolWidth = largeSymbolMetrics.horizontalAdvance(symbolText());
+    const qreal symbolWidth = symbolMetrics.horizontalAdvance(symbolText());
 
     const qreal operatorWidth =
         std::max(symbolWidth, std::max(upperLayout.size.width(), lowerLayout.size.width())) + 6.0;
 
     const qreal symbolTop = upperLayout.size.height() + 2.0;
 
-    const qreal operatorBaseline = symbolTop + largeSymbolMetrics.ascent();
+    const qreal operatorBaseline = symbolTop + symbolMetrics.ascent();
 
-    const qreal lowerTop = symbolTop + largeSymbolMetrics.height() + 2.0;
+    const qreal lowerTop = symbolTop + symbolMetrics.height() + 2.0;
 
     const qreal bodyTop = operatorBaseline - bodyLayout.baseline;
 
@@ -841,13 +902,13 @@ QPointF LargeOperatorNode::upperLimitPosition(const QPointF &topLeft, const QFon
 {
     const QFontMetricsF limitMetrics(limitFont(metrics));
 
-    const QFontMetricsF largeSymbolMetrics(symbolFont(metrics));
+    const QFontMetricsF symbolMetrics(symbolFont(metrics));
 
     const NodeLayout upperLayout = m_upperLimit->layout(limitMetrics);
 
     const NodeLayout lowerLayout = m_lowerLimit->layout(limitMetrics);
 
-    const qreal symbolWidth = largeSymbolMetrics.horizontalAdvance(symbolText());
+    const qreal symbolWidth = symbolMetrics.horizontalAdvance(symbolText());
 
     const qreal operatorWidth =
         std::max(symbolWidth, std::max(upperLayout.size.width(), lowerLayout.size.width())) + 6.0;
@@ -859,20 +920,20 @@ QPointF LargeOperatorNode::lowerLimitPosition(const QPointF &topLeft, const QFon
 {
     const QFontMetricsF limitMetrics(limitFont(metrics));
 
-    const QFontMetricsF largeSymbolMetrics(symbolFont(metrics));
+    const QFontMetricsF symbolMetrics(symbolFont(metrics));
 
     const NodeLayout upperLayout = m_upperLimit->layout(limitMetrics);
 
     const NodeLayout lowerLayout = m_lowerLimit->layout(limitMetrics);
 
-    const qreal symbolWidth = largeSymbolMetrics.horizontalAdvance(symbolText());
+    const qreal symbolWidth = symbolMetrics.horizontalAdvance(symbolText());
 
     const qreal operatorWidth =
         std::max(symbolWidth, std::max(upperLayout.size.width(), lowerLayout.size.width())) + 6.0;
 
     const qreal symbolTop = upperLayout.size.height() + 2.0;
 
-    const qreal lowerTop = symbolTop + largeSymbolMetrics.height() + 2.0;
+    const qreal lowerTop = symbolTop + symbolMetrics.height() + 2.0;
 
     return {topLeft.x() + (operatorWidth - lowerLayout.size.width()) / 2.0, topLeft.y() + lowerTop};
 }
@@ -881,7 +942,7 @@ QPointF LargeOperatorNode::bodyPosition(const QPointF &topLeft, const QFontMetri
 {
     const QFontMetricsF limitMetrics(limitFont(metrics));
 
-    const QFontMetricsF largeSymbolMetrics(symbolFont(metrics));
+    const QFontMetricsF symbolMetrics(symbolFont(metrics));
 
     const NodeLayout upperLayout = m_upperLimit->layout(limitMetrics);
 
@@ -889,14 +950,14 @@ QPointF LargeOperatorNode::bodyPosition(const QPointF &topLeft, const QFontMetri
 
     const NodeLayout bodyLayout = m_body->layout(metrics);
 
-    const qreal symbolWidth = largeSymbolMetrics.horizontalAdvance(symbolText());
+    const qreal symbolWidth = symbolMetrics.horizontalAdvance(symbolText());
 
     const qreal operatorWidth =
         std::max(symbolWidth, std::max(upperLayout.size.width(), lowerLayout.size.width())) + 6.0;
 
     const qreal symbolTop = upperLayout.size.height() + 2.0;
 
-    const qreal operatorBaseline = symbolTop + largeSymbolMetrics.ascent();
+    const qreal operatorBaseline = symbolTop + symbolMetrics.ascent();
 
     return {topLeft.x() + operatorWidth + 8.0, topLeft.y() + operatorBaseline - bodyLayout.baseline};
 }

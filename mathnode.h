@@ -1,5 +1,8 @@
 #pragma once
 
+#include "mathstyle.h"
+
+#include <QFont>
 #include <QFontMetricsF>
 #include <QPainter>
 #include <QPointF>
@@ -9,13 +12,14 @@
 #include <memory>
 #include <vector>
 
-// ---------------------------------------------------------------------------
-// Forward declarations
-// ---------------------------------------------------------------------------
+struct NodeLayout
+{
+    QSizeF size;
+    qreal baseline = 0.0;
+};
 
 class FractionNode;
 class RootNode;
-class RowNode;
 class ScriptNode;
 class LargeOperatorNode;
 
@@ -39,19 +43,9 @@ enum class LargeOperatorType
     Summation
 };
 
-// ---------------------------------------------------------------------------
-// NodeLayout
-// ---------------------------------------------------------------------------
-
-struct NodeLayout
-{
-    QSizeF size;
-    qreal baseline = 0;
-};
-
-// ---------------------------------------------------------------------------
-// MathNode — interfaz base
-// ---------------------------------------------------------------------------
+// ============================================================
+// MathNode
+// ============================================================
 
 class MathNode
 {
@@ -59,147 +53,205 @@ class MathNode
     virtual ~MathNode() = default;
 
     virtual NodeLayout layout(const QFontMetricsF &metrics) const = 0;
+
     virtual void draw(QPainter &painter, const QPointF &topLeft, const QFontMetricsF &metrics) const = 0;
+
     virtual QString toLatex() const = 0;
+
+    virtual void setMathStyle(const MathStyle &style) = 0;
 };
 
-// ---------------------------------------------------------------------------
+// ============================================================
 // TextNode
-// ---------------------------------------------------------------------------
+// ============================================================
 
 class TextNode final : public MathNode
 {
   public:
     explicit TextNode(QString text);
 
-    // MathNode
     NodeLayout layout(const QFontMetricsF &metrics) const override;
+
     void draw(QPainter &painter, const QPointF &topLeft, const QFontMetricsF &metrics) const override;
+
     QString toLatex() const override;
+
+    void setMathStyle(const MathStyle &style) override
+    {
+        m_style = style;
+        m_hasMathStyle = true;
+    }
 
   private:
     QString m_text;
+
+    MathStyle m_style;
+    bool m_hasMathStyle = false;
 };
 
-// ---------------------------------------------------------------------------
+// ============================================================
 // RowNode
-// ---------------------------------------------------------------------------
+// ============================================================
 
 class RowNode final : public MathNode
 {
   public:
     explicit RowNode(FractionNode *ownerFraction = nullptr, RowRole role = RowRole::Root);
+
     RowNode(RootNode *ownerRoot, RowRole role);
+
     RowNode(ScriptNode *ownerScript, RowRole role);
+
     RowNode(LargeOperatorNode *ownerOperator, RowRole role);
+
+    FractionNode *ownerFraction() const;
+    RootNode *ownerRoot() const;
+    ScriptNode *ownerScript() const;
 
     LargeOperatorNode *ownerOperator() const;
 
-    // Propietario / rol
-
-    ScriptNode *ownerScript() const;
-    RootNode *ownerRoot() const;
-    FractionNode *ownerFraction() const;
     RowRole role() const;
-    std::unique_ptr<MathNode> takeNode(qsizetype index);
 
-    // Gestión de hijos
     qsizetype childCount() const;
+
     MathNode *childAt(qsizetype index);
+
     const MathNode *childAt(qsizetype index) const;
+
     qsizetype indexOf(const MathNode *node) const;
 
     void appendNode(std::unique_ptr<MathNode> node);
+
     void insertNode(qsizetype index, std::unique_ptr<MathNode> node);
+
+    std::unique_ptr<MathNode> takeNode(qsizetype index);
+
     void removeNode(qsizetype index);
 
-    // MathNode
     NodeLayout layout(const QFontMetricsF &metrics) const override;
+
     void draw(QPainter &painter, const QPointF &topLeft, const QFontMetricsF &metrics) const override;
+
+    qreal cursorOffset(qsizetype cursorPosition, const QFontMetricsF &metrics) const;
+
     QString toLatex() const override;
 
-    // Edición
-    qreal cursorOffset(qsizetype cursorPosition, const QFontMetricsF &metrics) const;
+    void setMathStyle(const MathStyle &style) override
+    {
+        m_style = style;
+        m_hasMathStyle = true;
+
+        for (const auto &child : m_children)
+        {
+            child->setMathStyle(style);
+        }
+    }
 
   private:
     std::vector<std::unique_ptr<MathNode>> m_children;
+
     FractionNode *m_ownerFraction = nullptr;
-    RootNode *m_ownerRoot = nullptr;
     RowRole m_role = RowRole::Root;
+
+    RootNode *m_ownerRoot = nullptr;
     ScriptNode *m_ownerScript = nullptr;
+
     LargeOperatorNode *m_ownerOperator = nullptr;
+
+    MathStyle m_style;
+    bool m_hasMathStyle = false;
 };
 
-// ---------------------------------------------------------------------------
+// ============================================================
 // FractionNode
-// ---------------------------------------------------------------------------
+// ============================================================
 
 class FractionNode final : public MathNode
 {
   public:
     FractionNode();
+
     FractionNode(std::unique_ptr<MathNode> numerator, std::unique_ptr<MathNode> denominator);
 
-    // Acceso a filas internas
     RowNode *numeratorRow();
-    const RowNode *numeratorRow() const;
     RowNode *denominatorRow();
+
+    const RowNode *numeratorRow() const;
     const RowNode *denominatorRow() const;
 
-    // Fila contenedora
     RowNode *parentRow() const;
+
     void setParentRow(RowNode *parentRow);
 
-    // MathNode
     NodeLayout layout(const QFontMetricsF &metrics) const override;
+
     void draw(QPainter &painter, const QPointF &topLeft, const QFontMetricsF &metrics) const override;
+
+    QPointF numeratorPosition(const QPointF &topLeft, const QFontMetricsF &metrics) const;
+
+    QPointF denominatorPosition(const QPointF &topLeft, const QFontMetricsF &metrics) const;
+
     QString toLatex() const override;
 
-    // Posicionamiento
-    QPointF numeratorPosition(const QPointF &topLeft, const QFontMetricsF &metrics) const;
-    QPointF denominatorPosition(const QPointF &topLeft, const QFontMetricsF &metrics) const;
+    void setMathStyle(const MathStyle &style) override
+    {
+        m_style = style;
+        m_numerator->setMathStyle(style);
+        m_denominator->setMathStyle(style);
+    }
 
   private:
     std::unique_ptr<RowNode> m_numerator;
     std::unique_ptr<RowNode> m_denominator;
 
-    RowNode *m_parentRow = nullptr; // No es propietario.
+    RowNode *m_parentRow = nullptr;
+
+    MathStyle m_style;
 };
 
-// ---------------------------------------------------------------------------
+// ============================================================
 // RootNode
-// ---------------------------------------------------------------------------
+// ============================================================
 
 class RootNode final : public MathNode
 {
   public:
     RootNode();
 
-    // Acceso a fila interna
     RowNode *radicandRow();
+
     const RowNode *radicandRow() const;
 
-    // Fila contenedora
     RowNode *parentRow() const;
+
     void setParentRow(RowNode *parentRow);
 
-    // MathNode
     NodeLayout layout(const QFontMetricsF &metrics) const override;
+
     void draw(QPainter &painter, const QPointF &topLeft, const QFontMetricsF &metrics) const override;
+
+    QPointF radicandPosition(const QPointF &topLeft, const QFontMetricsF &metrics) const;
+
     QString toLatex() const override;
 
-    // Posicionamiento
-    QPointF radicandPosition(const QPointF &topLeft, const QFontMetricsF &metrics) const;
+    void setMathStyle(const MathStyle &style) override
+    {
+        m_style = style;
+        m_radicand->setMathStyle(style);
+    }
 
   private:
     std::unique_ptr<RowNode> m_radicand;
 
-    RowNode *m_parentRow = nullptr; // No es propietario.
+    RowNode *m_parentRow = nullptr;
+
+    MathStyle m_style;
 };
 
-// ---------------------------------------------------------------------------
+// ============================================================
 // ScriptNode
-// ---------------------------------------------------------------------------
+// ============================================================
+
 class ScriptNode final : public MathNode
 {
   public:
@@ -220,6 +272,7 @@ class ScriptNode final : public MathNode
     void enableSubscript();
 
     RowNode *parentRow() const;
+
     void setParentRow(RowNode *parentRow);
 
     QFont superscriptFont(const QFontMetricsF &baseMetrics) const;
@@ -236,6 +289,20 @@ class ScriptNode final : public MathNode
 
     QString toLatex() const override;
 
+    void setMathStyle(const MathStyle &style) override
+    {
+        m_style = style;
+        m_hasMathStyle = true;
+
+        m_base->setMathStyle(style);
+
+        const MathStyle scriptStyle = style.scaled(0.70);
+
+        m_superscript->setMathStyle(scriptStyle);
+
+        m_subscript->setMathStyle(scriptStyle);
+    }
+
   private:
     std::unique_ptr<RowNode> m_base;
     std::unique_ptr<RowNode> m_superscript;
@@ -244,13 +311,16 @@ class ScriptNode final : public MathNode
     bool m_hasSuperscript = true;
     bool m_hasSubscript = false;
 
-    // No es propietario.
     RowNode *m_parentRow = nullptr;
+
+    MathStyle m_style;
+    bool m_hasMathStyle = false;
 };
 
-// ---------------------------------------------------------------------------
+// ============================================================
 // LargeOperatorNode
-// ---------------------------------------------------------------------------
+// ============================================================
+
 class LargeOperatorNode final : public MathNode
 {
   public:
@@ -267,6 +337,7 @@ class LargeOperatorNode final : public MathNode
     const RowNode *bodyRow() const;
 
     RowNode *parentRow() const;
+
     void setParentRow(RowNode *parentRow);
 
     QFont limitFont(const QFontMetricsF &baseMetrics) const;
@@ -285,6 +356,20 @@ class LargeOperatorNode final : public MathNode
 
     QString toLatex() const override;
 
+    void setMathStyle(const MathStyle &style) override
+    {
+        m_style = style;
+        m_hasMathStyle = true;
+
+        const MathStyle limitStyle = style.scaled(0.65);
+
+        m_upperLimit->setMathStyle(limitStyle);
+
+        m_lowerLimit->setMathStyle(limitStyle);
+
+        m_body->setMathStyle(style);
+    }
+
   private:
     QString symbolText() const;
 
@@ -296,6 +381,8 @@ class LargeOperatorNode final : public MathNode
     std::unique_ptr<RowNode> m_lowerLimit;
     std::unique_ptr<RowNode> m_body;
 
-    // No es propietario.
     RowNode *m_parentRow = nullptr;
+
+    MathStyle m_style;
+    bool m_hasMathStyle = false;
 };

@@ -15,6 +15,7 @@ qt_add_executable(Fermat
     equationwidget.h
     mathnode.cpp
     mathnode.h
+    mathstyle.h
 )
 
 target_link_libraries(Fermat
